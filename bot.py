@@ -161,9 +161,9 @@ def validate_script(script_code: str) -> tuple[bool, str]:
     except SyntaxError as e:
         return False, f"❌ Syntax error: {str(e)}"
     
-    # Check for required function
-    if 'on_message' not in script_code:
-        return False, "❌ Script must contain 'on_message(message)' function"
+    # *** FIX: Require async def on_message ***
+    if 'async def on_message(' not in script_code:
+        return False, "❌ Script must contain 'async def on_message(message)' function"
     
     return True, "✅ Script is valid"
 
@@ -213,24 +213,32 @@ app = Client(
 
 FOOTER = "{FOOTER_MESSAGE}"
 
-# User script
+# BotCompat class for user script
+class BotCompat:
+    def __init__(self, client):
+        self.client = client
+    
+    # This must be an async function
+    async def sendMessage(self, chat_id, text, parse_mode="HTML"):
+        await self.client.send_message(chat_id, text + FOOTER, parse_mode=parse_mode)
+
+# User script (must define async def on_message)
 {script_code}
 
 @app.on_message(filters.private)
 async def message_handler(client: Client, message: Message):
     try:
-        # Create a simple bot object for compatibility
-        class BotCompat:
-            def __init__(self, client):
-                self.client = client
-            
-            async def sendMessage(self, chat_id, text, parse_mode="HTML"):
-                await self.client.send_message(chat_id, text + FOOTER, parse_mode=parse_mode)
-        
+        # Create bot object
         bot = BotCompat(client)
         
-        # Execute user's on_message function
-        on_message(message)
+        # *** FIX: Execute user's on_message function ASYNCHRONOUSLY ***
+        if message.text:
+            # Check if the user's script defined the required function
+            if 'on_message' in globals() and asyncio.iscoroutinefunction(globals()['on_message']):
+                await on_message(message)
+            else:
+                logger.error(f"Bot {{BOT_ID}} script missing 'async def on_message'")
+                await message.reply_text("❌ Configuration Error: Missing required function 'async def on_message'.")
         
     except Exception as e:
         logger.error(f"Error in bot {{BOT_ID}}: {{e}}")
@@ -507,18 +515,19 @@ async def handle_text_messages(client: Client, message: Message):
             "bot_username": result
         }
         
-        example_script = '''def handle_start(message):
+        # *** FIX: Update example script to use async and await ***
+        example_script = '''async def handle_start(message):
     welcome_text = """
 🤖 <b>Welcome!</b>
 I'm your custom bot!
 """
-    bot.sendMessage(chat_id=message.chat.id, text=welcome_text, parse_mode="HTML")
+    await bot.sendMessage(chat_id=message.chat.id, text=welcome_text, parse_mode="HTML")
 
-def on_message(message):
+async def on_message(message):
     if message.text.startswith("/start"):
-        handle_start(message)
+        await handle_start(message)
     else:
-        bot.sendMessage(chat_id=message.chat.id, text="You said: " + message.text)
+        await bot.sendMessage(chat_id=message.chat.id, text="You said: " + message.text)
 '''
         
         await message.reply_text(
@@ -526,8 +535,8 @@ def on_message(message):
             f"📝 Now send me your Python bot script.\n\n"
             f"<b>Example:</b>\n<code>{example_script}</code>\n\n"
             f"Requirements:\n"
-            f"• Must contain on_message(message) function\n"
-            f"• Use bot.sendMessage() to send messages\n"
+            f"• Must contain **async def on_message(message)** function\n" # <--- Highlight async
+            f"• Use **await bot.sendMessage()** to send messages\n" # <--- Highlight await
             f"• No dangerous imports allowed\n\n"
             f"Send /cancel to cancel."
         )
@@ -857,19 +866,19 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
 • Delete bots you don't need
 
 <b>3. Script Requirements:</b>
-• Must have on_message(message) function
-• Use bot.sendMessage() to reply
+• Must have **async def on_message(message)** function (CRITICAL FIX)
+• Use **await bot.sendMessage()** to reply (CRITICAL FIX)
 • No dangerous imports allowed
 
 <b>4. Script Example:</b>
-<code>def on_message(message):
+<code>async def on_message(message):
     if message.text == "/start":
-        bot.sendMessage(
+        await bot.sendMessage(
             chat_id=message.chat.id,
             text="Hello!"
         )
     else:
-        bot.sendMessage(
+        await bot.sendMessage(
             chat_id=message.chat.id,
             text="You said: " + message.text
         )</code>
