@@ -1,5 +1,5 @@
 """
-Telegram Bot Hoster System - FIXED VERSION
+Telegram Bot Hoster System
 Developer: @Zeroboy216
 Channel: https://t.me/zerodevbro
 """
@@ -62,7 +62,7 @@ FOOTER_MESSAGE = "\n\n⚡ Powered by Zero Dev Bro\n📢 Updates: @zerodevbro"
 BLOCKED_IMPORTS = [
     'os.remove', 'os.unlink', 'os.rmdir', 'shutil.rmtree',
     'subprocess', 'eval', 'exec', '__import__',
-    'open(', 'file', 'input(', 'compile'
+    'open', 'file', 'input', 'compile'
 ]
 
 
@@ -153,7 +153,7 @@ def validate_script(script_code: str) -> tuple[bool, str]:
     # Check for blocked imports
     for blocked in BLOCKED_IMPORTS:
         if blocked in script_code:
-            return False, f"❌ Blocked code detected: {blocked}"
+            return False, f"❌ Blocked import detected: {blocked}"
     
     # Check for basic syntax
     try:
@@ -161,9 +161,9 @@ def validate_script(script_code: str) -> tuple[bool, str]:
     except SyntaxError as e:
         return False, f"❌ Syntax error: {str(e)}"
     
-    # Check for required function
-    if 'def on_message' not in script_code:
-        return False, "❌ Script must contain 'def on_message(client, message):' function"
+    # *** FIXED: Must contain async def on_message ***
+    if 'async def on_message(' not in script_code:
+        return False, "❌ Script must contain 'async def on_message(message)' function"
     
     return True, "✅ Script is valid"
 
@@ -189,7 +189,7 @@ async def validate_bot_token(bot_token: str) -> tuple[bool, str]:
 
 
 def create_bot_script(bot_token: str, script_code: str, bot_id: str) -> str:
-    """Create a runnable bot script - FIXED VERSION"""
+    """Create a runnable bot script"""
     runner_script = f'''
 import asyncio
 from pyrogram import Client, filters
@@ -211,23 +211,39 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-FOOTER = """{FOOTER_MESSAGE}"""
+FOOTER = "{FOOTER_MESSAGE}"
 
-# User script
+# Bot Compatibility Class for user script
+class BotCompat:
+    def __init__(self, client):
+        self.client = client
+    
+    # sendMessage MUST be async
+    async def sendMessage(self, chat_id, text, parse_mode="HTML"):
+        await self.client.send_message(chat_id, text + FOOTER, parse_mode=parse_mode)
+
+# User script (must define async def on_message)
 {script_code}
 
 @app.on_message(filters.private)
 async def message_handler(client: Client, message: Message):
     try:
-        # Call user's on_message function with proper parameters
-        await on_message(client, message)
+        # Create bot object
+        bot = BotCompat(client)
+        
+        # *** CRITICAL FIX: Ensure on_message is defined and awaited ***
+        if message.text:
+            # Check if the user's script defined the required function
+            if 'on_message' in globals() and asyncio.iscoroutinefunction(globals()['on_message']):
+                await globals()['on_message'](message) # Await the user's async function
+            else:
+                logger.error(f"Bot {{BOT_ID}} script missing 'async def on_message'")
+                # Optionally reply to user about the configuration error
+                # await message.reply_text("❌ Configuration Error: Missing required function 'async def on_message'.")
         
     except Exception as e:
         logger.error(f"Error in bot {{BOT_ID}}: {{e}}")
-        try:
-            await message.reply_text("❌ An error occurred while processing your message." + FOOTER)
-        except:
-            pass
+        await message.reply_text("❌ An error occurred while processing your message.")
 
 if __name__ == "__main__":
     logger.info(f"Starting bot {{BOT_ID}}...")
@@ -337,7 +353,7 @@ async def monitor_bot(bot_id: str):
             await increment_error_count(bot_id)
             
             bot_data = await get_bot_by_id(bot_id)
-            if bot_data and bot_data.get('error_count', 0) < 5:
+            if bot_data and bot_data['error_count'] < 5:
                 # Auto-restart
                 del running_bots[bot_id]
                 await asyncio.sleep(2)
@@ -403,9 +419,10 @@ I can host your Telegram bots for free. Just provide:
 ✅ 24/7 uptime
 
 <b>Commands:</b>
-/addbot - Create a new bot
+/startbot - Start your bot
+/stopbot - Stop your bot
+/editbot - Edit bot script
 /mybots - View all your bots
-/cancel - Cancel operation
 
 👨‍💻 Developer: @Zeroboy216
 📢 Updates: @zerodevbro
@@ -499,29 +516,28 @@ async def handle_text_messages(client: Client, message: Message):
             "bot_username": result
         }
         
-        example_script = '''async def on_message(client, message):
-    """Handle incoming messages"""
-    if message.text and message.text.startswith("/start"):
-        welcome_text = """
+        # Updated example script to use async/await
+        example_script = '''async def handle_start(message):
+    welcome_text = """
 🤖 <b>Welcome!</b>
 I'm your custom bot!
-
-Try sending me any message.
 """
-        await message.reply_text(welcome_text)
-    elif message.text:
-        await message.reply_text(f"You said: {message.text}")
+    await bot.sendMessage(chat_id=message.chat.id, text=welcome_text, parse_mode="HTML")
+
+async def on_message(message):
+    if message.text.startswith("/start"):
+        await handle_start(message)
     else:
-        await message.reply_text("Please send me a text message!")
+        await bot.sendMessage(chat_id=message.chat.id, text="You said: " + message.text)
 '''
         
         await message.reply_text(
             f"✅ Bot token validated: @{result}\n\n"
             f"📝 Now send me your Python bot script.\n\n"
-            f"<b>Example:</b>\n<code>{example_script}</code>\n\n"
-            f"<b>Requirements:</b>\n"
-            f"• Must contain <code>async def on_message(client, message):</code>\n"
-            f"• Use <code>await message.reply_text()</code> to send messages\n"
+            f"<b>Example (Requires async/await):</b>\n<code>{example_script}</code>\n\n"
+            f"Requirements:\n"
+            f"• Must contain **async def on_message(message)** function\n" 
+            f"• Use **await bot.sendMessage()** to send messages\n" 
             f"• No dangerous imports allowed\n\n"
             f"Send /cancel to cancel."
         )
@@ -560,42 +576,6 @@ Try sending me any message.
             f"📊 Status: Stopped\n\n"
             f"Click 'Start Bot' to activate your bot!",
             reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    elif state.get("step") == "editing_script":
-        bot_id = state["bot_id"]
-        new_script = message.text
-        
-        # Validate script
-        is_valid, validation_msg = validate_script(new_script)
-        
-        if not is_valid:
-            await message.reply_text(
-                f"{validation_msg}\n\n"
-                f"Please fix your script and send again or /cancel"
-            )
-            return
-        
-        # Update script
-        await update_bot_script(bot_id, new_script)
-        
-        # Restart bot if it was running
-        bot_data = await get_bot_by_id(bot_id)
-        if bot_data['status'] == "running":
-            await stop_bot(bot_id)
-            await asyncio.sleep(2)
-            await start_bot(bot_id)
-            restart_msg = "\n\n🔄 Bot has been restarted with the new script."
-        else:
-            restart_msg = "\n\n💡 Start your bot to apply the changes."
-        
-        del user_states[user_id]
-        
-        await message.reply_text(
-            f"✅ <b>Script Updated Successfully!</b>{restart_msg}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 My Bots", callback_data="my_bots")
-            ]])
         )
 
 
@@ -683,6 +663,28 @@ async def stats_command(client: Client, message: Message):
         f"🔹 Disk Free: {disk.free / (1024**3):.2f} GB\n\n"
         f"🤖 Running Bots: {len(running_bots)}"
     )
+
+
+@app.on_message(filters.command("restart") & filters.user(OWNER_ID))
+async def restart_bot_command(client: Client, message: Message):
+    """Restart a specific bot"""
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /restart <bot_id>")
+        return
+    
+    bot_id = message.command[1]
+    
+    status_msg = await message.reply_text(f"🔄 Restarting bot {bot_id}...")
+    
+    # Stop bot if running
+    if bot_id in running_bots:
+        await stop_bot(bot_id)
+        await asyncio.sleep(2)
+    
+    # Start bot
+    success, msg = await start_bot(bot_id)
+    
+    await status_msg.edit_text(msg)
 
 
 # ============= Callback Handlers =============
@@ -783,6 +785,28 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
         else:
             await callback_query.answer(msg, show_alert=True)
     
+    elif data.startswith("stop_"):
+        bot_id = data.split("_", 1)[1]
+        bot_data = await get_bot_by_id(bot_id)
+        
+        if not bot_data or bot_data['user_id'] != user_id:
+            await callback_query.answer("❌ Bot not found!", show_alert=True)
+            return
+        
+        await callback_query.answer("🔄 Stopping bot...", show_alert=False)
+        
+        success, msg = await stop_bot(bot_id)
+        
+        if success:
+            await callback_query.answer("✅ Bot stopped!", show_alert=True)
+            # Refresh view
+            bot_data = await get_bot_by_id(bot_id)
+            await callback_query.message.edit_reply_markup(
+                reply_markup=bot_management_keyboard(bot_id, bot_data['status'])
+            )
+        else:
+            await callback_query.answer(msg, show_alert=True)
+    
     elif data.startswith("edit_"):
         bot_id = data.split("_", 1)[1]
         bot_data = await get_bot_by_id(bot_id)
@@ -799,7 +823,7 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
         await callback_query.message.edit_text(
             f"✏️ <b>Edit Bot Script</b>\n\n"
             f"Send me the new Python script for your bot.\n\n"
-            f"<b>Current Script Preview:</b>\n<code>{bot_data['script_code'][:300]}...</code>\n\n"
+            f"<b>Current Script:</b>\n<code>{bot_data['script_code'][:500]}...</code>\n\n"
             f"Send /cancel to cancel editing."
         )
     
@@ -843,17 +867,21 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
 • Delete bots you don't need
 
 <b>3. Script Requirements:</b>
-• Must have <code>async def on_message(client, message):</code>
-• Use <code>await message.reply_text()</code> to reply
+• Must have **async def on_message(message)** function
+• Use **await bot.sendMessage()** to reply
 • No dangerous imports allowed
 
 <b>4. Script Example:</b>
-<code>async def on_message(client, message):
+<code>async def on_message(message):
     if message.text == "/start":
-        await message.reply_text("Hello!")
+        await bot.sendMessage(
+            chat_id=message.chat.id,
+            text="Hello!"
+        )
     else:
-        await message.reply_text(
-            f"You said: {message.text}"
+        await bot.sendMessage(
+            chat_id=message.chat.id,
+            text="You said: " + message.text
         )</code>
 
 <b>Commands:</b>
@@ -873,6 +901,54 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
         )
     
     await callback_query.answer()
+
+
+# Handle script editing
+@app.on_message(filters.text & filters.private)
+async def handle_editing_state(client: Client, message: Message):
+    """Handle script editing"""
+    user_id = message.from_user.id
+    
+    if user_id not in user_states:
+        return
+    
+    state = user_states[user_id]
+    
+    if state.get("step") == "editing_script":
+        bot_id = state["bot_id"]
+        new_script = message.text
+        
+        # Validate script
+        is_valid, validation_msg = validate_script(new_script)
+        
+        if not is_valid:
+            await message.reply_text(
+                f"{validation_msg}\n\n"
+                f"Please fix your script and send again or /cancel"
+            )
+            return
+        
+        # Update script
+        await update_bot_script(bot_id, new_script)
+        
+        # Restart bot if it was running
+        bot_data = await get_bot_by_id(bot_id)
+        if bot_data['status'] == "running":
+            await stop_bot(bot_id)
+            await asyncio.sleep(2)
+            await start_bot(bot_id)
+            restart_msg = "\n\n🔄 Bot has been restarted with the new script."
+        else:
+            restart_msg = "\n\n💡 Start your bot to apply the changes."
+        
+        del user_states[user_id]
+        
+        await message.reply_text(
+            f"✅ <b>Script Updated Successfully!</b>{restart_msg}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📋 My Bots", callback_data="my_bots")
+            ]])
+        )
 
 
 # ============= Startup & Shutdown =============
@@ -940,26 +1016,4 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     
     # Run the bot
-    asyncio.run(main())msg, show_alert=True)
-    
-    elif data.startswith("stop_"):
-        bot_id = data.split("_", 1)[1]
-        bot_data = await get_bot_by_id(bot_id)
-        
-        if not bot_data or bot_data['user_id'] != user_id:
-            await callback_query.answer("❌ Bot not found!", show_alert=True)
-            return
-        
-        await callback_query.answer("🔄 Stopping bot...", show_alert=False)
-        
-        success, msg = await stop_bot(bot_id)
-        
-        if success:
-            await callback_query.answer("✅ Bot stopped!", show_alert=True)
-            # Refresh view
-            bot_data = await get_bot_by_id(bot_id)
-            await callback_query.message.edit_reply_markup(
-                reply_markup=bot_management_keyboard(bot_id, bot_data['status'])
-            )
-        else:
-            await callback_query.answer(
+    asyncio.run(main())
