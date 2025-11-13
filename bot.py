@@ -8,6 +8,7 @@ import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, BOT_USERNAME
 from database import Database
 from runner import BotRunner
@@ -127,7 +128,6 @@ async def add_bot_command(client: Client, message: Message):
         "Please send me your bot token from @BotFather\n\n"
         "**Example:** `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
         "Click Cancel to stop this operation.",
-        parse_mode="markdown",
         reply_markup=keyboard
     )
     
@@ -171,8 +171,7 @@ async def my_bots_command(client: Client, message: Message):
     
     await message.reply_text(
         text,
-        reply_markup=InlineKeyboardMarkup(keyboards),
-        parse_mode="markdown"
+        reply_markup=InlineKeyboardMarkup(keyboards)
     )
 
 # Handle messages based on user state
@@ -206,7 +205,6 @@ async def handle_token_input(client: Client, message: Message, state):
             "Token should look like:\n"
             "`1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
             "Try again or click Cancel.",
-            parse_mode="markdown",
             reply_markup=keyboard
         )
         return
@@ -251,7 +249,6 @@ async def handle_token_input(client: Client, message: Message, state):
         f"    await message.reply('Hello!')\n"
         f"```\n\n"
         f"Click Cancel to stop.",
-        parse_mode="markdown",
         reply_markup=keyboard
     )
 
@@ -331,7 +328,6 @@ async def handle_script_input(client: Client, message: Message, state):
             f"━━━━━━━━━━━━━━━━\n"
             f"⚡ **Powered by Zero Dev Bro**\n"
             f"📢 **Updates:** @zerodevbro",
-            parse_mode="markdown",
             reply_markup=keyboard
         )
     else:
@@ -436,7 +432,8 @@ async def callback_handler(client: Client, callback_query):
                 reply_markup=keyboard,
                 disable_web_page_preview=True
             )
-        except:
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
             await callback_query.message.reply_text(
                 WELCOME_MESSAGE,
                 reply_markup=keyboard,
@@ -455,19 +452,156 @@ async def callback_handler(client: Client, callback_query):
                 "Please send me your bot token from @BotFather\n\n"
                 "**Example:** `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
                 "Click Cancel to stop this operation.",
-                parse_mode="markdown",
                 reply_markup=keyboard
             )
-        except:
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
             await callback_query.message.reply_text(
                 "**🤖 Add Your Bot**\n\n"
                 "Please send me your bot token from @BotFather\n\n"
                 "**Example:** `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
                 "Click Cancel to stop this operation.",
-                parse_mode="markdown",
                 reply_markup=keyboard
             )
-        await db.set_user_state(user_id, "waiting_token", None)
+        await db.set_user_state(user_id, "editing_script", None, {"bot_id": bot_id})
+        await callback_query.answer()
+        
+    elif data.startswith("delete_confirm_"):
+        bot_id = data.split("_", 2)[2]
+        bot = await db.get_bot(bot_id)
+        
+        if not bot:
+            await callback_query.answer("❌ Bot not found!", show_alert=True)
+            return
+        
+        if bot["user_id"] != user_id:
+            await callback_query.answer("❌ Not your bot!", show_alert=True)
+            return
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Yes, Delete", callback_data=f"delete_{bot_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data="my_bots")
+            ]
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                f"**⚠️ Confirm Delete**\n\n"
+                f"Are you sure you want to delete this bot?\n\n"
+                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
+                f"**ID:** `{bot_id}`\n\n"
+                f"**This action cannot be undone!**",
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
+            await callback_query.message.reply_text(
+                f"**⚠️ Confirm Delete**\n\n"
+                f"Are you sure you want to delete this bot?\n\n"
+                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
+                f"**ID:** `{bot_id}`\n\n"
+                f"**This action cannot be undone!**",
+                reply_markup=keyboard
+            )
+        await callback_query.answer()
+    
+    elif data.startswith("delete_"):
+        bot_id = data.split("_")[1]
+        bot = await db.get_bot(bot_id)
+        
+        if not bot:
+            await callback_query.answer("❌ Bot not found!", show_alert=True)
+            return
+        
+        if bot["user_id"] != user_id:
+            await callback_query.answer("❌ Not your bot!", show_alert=True)
+            return
+        
+        await runner.stop_bot(bot_id)
+        await db.delete_bot(bot_id)
+        
+        await callback_query.answer("🗑️ Bot deleted!")
+        
+        # Show updated bots list
+        bots = await db.get_user_bots(user_id)
+        
+        if not bots:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Add Bot", callback_data="add_bot")],
+                [InlineKeyboardButton("🔙 Back", callback_data="start")]
+            ])
+            
+            try:
+                await callback_query.message.edit_text(
+                    "✅ **Bot Deleted Successfully!**\n\n"
+                    "❌ You don't have any bots now.\n\n"
+                    "Use Add Bot button to add a new bot.",
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"Error editing message: {e}")
+                await callback_query.message.reply_text(
+                    "✅ **Bot Deleted Successfully!**\n\n"
+                    "❌ You don't have any bots now.\n\n"
+                    "Use Add Bot button to add a new bot.",
+                    reply_markup=keyboard
+                )
+            return
+        
+        text = "✅ **Bot Deleted Successfully!**\n\n**📋 Your Remaining Bots:**\n\n"
+        keyboards = []
+        
+        for idx, bot in enumerate(bots, 1):
+            status = "🟢 Running" if bot.get("status") == "running" else "🔴 Stopped"
+            text += f"{idx}. **Bot:** @{bot.get('bot_username', 'unknown')}\n"
+            text += f"   **ID:** `{bot['_id']}`\n"
+            text += f"   **Status:** {status}\n\n"
+            
+            keyboards.append([
+                InlineKeyboardButton(
+                    f"{'⏹️ Stop' if bot.get('status') == 'running' else '▶️ Start'} Bot {idx}",
+                    callback_data=f"toggle_{bot['_id']}"
+                ),
+                InlineKeyboardButton(f"✏️ Edit {idx}", callback_data=f"edit_{bot['_id']}")
+            ])
+            keyboards.append([
+                InlineKeyboardButton(f"🗑️ Delete Bot {idx}", callback_data=f"delete_confirm_{bot['_id']}")
+            ])
+        
+        keyboards.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="my_bots"),
+            InlineKeyboardButton("🔙 Back", callback_data="start")
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboards)
+            )
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
+            await callback_query.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboards)
+            )
+
+# Admin commands
+@app.on_message(filters.command(["broadcast", "total", "restart", "stats"]) & filters.user(OWNER_ID))
+async def admin_commands(client: Client, message: Message):
+    await handle_admin_commands(client, message, db, runner)
+
+# Cancel command
+@app.on_message(filters.command("cancel") & filters.private)
+async def cancel_command(client: Client, message: Message):
+    user_id = message.from_user.id
+    await db.clear_user_state(user_id)
+    await message.reply_text("✅ Operation cancelled.")
+
+# Run the bot
+if __name__ == "__main__":
+    logger.info("Starting Bot Hoster...")
+    app.run()d, "waiting_token", None)
         await callback_query.answer()
     
     elif data == "cancel_operation":
@@ -481,7 +615,8 @@ async def callback_handler(client: Client, callback_query):
                 "Click Home to return to main menu.",
                 reply_markup=keyboard
             )
-        except:
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
             await callback_query.message.reply_text(
                 "✅ **Operation Cancelled**\n\n"
                 "Click Home to return to main menu.",
@@ -505,7 +640,8 @@ async def callback_handler(client: Client, callback_query):
                     "Use Add Bot button to add your first bot.",
                     reply_markup=keyboard
                 )
-            except:
+            except Exception as e:
+                logger.error(f"Error editing message: {e}")
                 await callback_query.message.reply_text(
                     "❌ **You don't have any bots yet!**\n\n"
                     "Use Add Bot button to add your first bot.",
@@ -542,14 +678,13 @@ async def callback_handler(client: Client, callback_query):
         try:
             await callback_query.message.edit_text(
                 text,
-                reply_markup=InlineKeyboardMarkup(keyboards),
-                parse_mode="markdown"
+                reply_markup=InlineKeyboardMarkup(keyboards)
             )
-        except:
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
             await callback_query.message.reply_text(
                 text,
-                reply_markup=InlineKeyboardMarkup(keyboards),
-                parse_mode="markdown"
+                reply_markup=InlineKeyboardMarkup(keyboards)
             )
         
     elif data == "help":
@@ -574,7 +709,8 @@ async def callback_handler(client: Client, callback_query):
                 reply_markup=keyboard,
                 disable_web_page_preview=True
             )
-        except:
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
             await callback_query.message.reply_text(
                 WELCOME_MESSAGE,
                 reply_markup=keyboard,
@@ -611,14 +747,13 @@ Total Users: `{stats['total_users']}`
         try:
             await callback_query.message.edit_text(
                 stats_text,
-                reply_markup=keyboard,
-                parse_mode="markdown"
+                reply_markup=keyboard
             )
-        except:
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
             await callback_query.message.reply_text(
                 stats_text,
-                reply_markup=keyboard,
-                parse_mode="markdown"
+                reply_markup=keyboard
             )
         await callback_query.answer()
         
@@ -678,11 +813,10 @@ Total Users: `{stats['total_users']}`
         try:
             await callback_query.message.edit_text(
                 text,
-                reply_markup=InlineKeyboardMarkup(keyboards),
-                parse_mode="markdown"
+                reply_markup=InlineKeyboardMarkup(keyboards)
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
         
     elif data.startswith("edit_"):
         bot_id = data.split("_")[1]
@@ -706,156 +840,16 @@ Total Users: `{stats['total_users']}`
                 f"**Bot:** @{bot.get('bot_username', 'unknown')}\n\n"
                 "Send me the new Python script for your bot.\n\n"
                 "Click Cancel to go back.",
-                parse_mode="markdown",
                 reply_markup=keyboard
             )
-        except:
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
             await callback_query.message.reply_text(
                 "**✏️ Edit Bot Script**\n\n"
                 f"**Bot:** @{bot.get('bot_username', 'unknown')}\n\n"
                 "Send me the new Python script for your bot.\n\n"
                 "Click Cancel to go back.",
-                parse_mode="markdown",
                 reply_markup=keyboard
             )
         
-        await db.set_user_state(user_id, "editing_script", None, {"bot_id": bot_id})
-        await callback_query.answer()
-        
-    elif data.startswith("delete_confirm_"):
-        bot_id = data.split("_", 2)[2]
-        bot = await db.get_bot(bot_id)
-        
-        if not bot:
-            await callback_query.answer("❌ Bot not found!", show_alert=True)
-            return
-        
-        if bot["user_id"] != user_id:
-            await callback_query.answer("❌ Not your bot!", show_alert=True)
-            return
-        
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Yes, Delete", callback_data=f"delete_{bot_id}"),
-                InlineKeyboardButton("❌ Cancel", callback_data="my_bots")
-            ]
-        ])
-        
-        try:
-            await callback_query.message.edit_text(
-                f"**⚠️ Confirm Delete**\n\n"
-                f"Are you sure you want to delete this bot?\n\n"
-                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
-                f"**ID:** `{bot_id}`\n\n"
-                f"**This action cannot be undone!**",
-                reply_markup=keyboard,
-                parse_mode="markdown"
-            )
-        except:
-            await callback_query.message.reply_text(
-                f"**⚠️ Confirm Delete**\n\n"
-                f"Are you sure you want to delete this bot?\n\n"
-                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
-                f"**ID:** `{bot_id}`\n\n"
-                f"**This action cannot be undone!**",
-                reply_markup=keyboard,
-                parse_mode="markdown"
-            )
-        await callback_query.answer()
-    
-    elif data.startswith("delete_"):
-        bot_id = data.split("_")[1]
-        bot = await db.get_bot(bot_id)
-        
-        if not bot:
-            await callback_query.answer("❌ Bot not found!", show_alert=True)
-            return
-        
-        if bot["user_id"] != user_id:
-            await callback_query.answer("❌ Not your bot!", show_alert=True)
-            return
-        
-        await runner.stop_bot(bot_id)
-        await db.delete_bot(bot_id)
-        
-        await callback_query.answer("🗑️ Bot deleted!")
-        
-        # Show updated bots list
-        bots = await db.get_user_bots(user_id)
-        
-        if not bots:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Add Bot", callback_data="add_bot")],
-                [InlineKeyboardButton("🔙 Back", callback_data="start")]
-            ])
-            
-            try:
-                await callback_query.message.edit_text(
-                    "✅ **Bot Deleted Successfully!**\n\n"
-                    "❌ You don't have any bots now.\n\n"
-                    "Use Add Bot button to add a new bot.",
-                    reply_markup=keyboard
-                )
-            except:
-                await callback_query.message.reply_text(
-                    "✅ **Bot Deleted Successfully!**\n\n"
-                    "❌ You don't have any bots now.\n\n"
-                    "Use Add Bot button to add a new bot.",
-                    reply_markup=keyboard
-                )
-            return
-        
-        text = "✅ **Bot Deleted Successfully!**\n\n**📋 Your Remaining Bots:**\n\n"
-        keyboards = []
-        
-        for idx, bot in enumerate(bots, 1):
-            status = "🟢 Running" if bot.get("status") == "running" else "🔴 Stopped"
-            text += f"{idx}. **Bot:** @{bot.get('bot_username', 'unknown')}\n"
-            text += f"   **ID:** `{bot['_id']}`\n"
-            text += f"   **Status:** {status}\n\n"
-            
-            keyboards.append([
-                InlineKeyboardButton(
-                    f"{'⏹️ Stop' if bot.get('status') == 'running' else '▶️ Start'} Bot {idx}",
-                    callback_data=f"toggle_{bot['_id']}"
-                ),
-                InlineKeyboardButton(f"✏️ Edit {idx}", callback_data=f"edit_{bot['_id']}")
-            ])
-            keyboards.append([
-                InlineKeyboardButton(f"🗑️ Delete Bot {idx}", callback_data=f"delete_confirm_{bot['_id']}")
-            ])
-        
-        keyboards.append([
-            InlineKeyboardButton("🔄 Refresh", callback_data="my_bots"),
-            InlineKeyboardButton("🔙 Back", callback_data="start")
-        ])
-        
-        try:
-            await callback_query.message.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboards),
-                parse_mode="markdown"
-            )
-        except:
-            await callback_query.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboards),
-                parse_mode="markdown"
-            )
-
-# Admin commands
-@app.on_message(filters.command(["broadcast", "total", "restart", "stats"]) & filters.user(OWNER_ID))
-async def admin_commands(client: Client, message: Message):
-    await handle_admin_commands(client, message, db, runner)
-
-# Cancel command
-@app.on_message(filters.command("cancel") & filters.private)
-async def cancel_command(client: Client, message: Message):
-    user_id = message.from_user.id
-    await db.clear_user_state(user_id)
-    await message.reply_text("✅ Operation cancelled.")
-
-# Run the bot
-if __name__ == "__main__":
-    logger.info("Starting Bot Hoster...")
-    app.run()
+        await db.set_user_state(user_i
