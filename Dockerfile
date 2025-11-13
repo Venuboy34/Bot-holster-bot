@@ -1,19 +1,35 @@
-# Use an official Python runtime as a parent image
+# Telegram Bot Hoster - Docker Configuration
+# Developer: @Zeroboy216
+# Channel: @zerodevbro
+
 FROM python:3.11-slim
 
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the requirements file into the container at /app
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install any dependencies specified in requirements.txt
-# The '--no-cache-dir' flag helps keep the image size smaller
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code (including bot.py) into the container
+# Copy application files
 COPY . .
 
-# Define the command to run your script
-# This command is executed when the container starts
+# Create directory for session files
+RUN mkdir -p /app/sessions
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# Expose port (if needed)
+EXPOSE 8080
+
+# Run the bot
 CMD ["python", "bot.py"]
