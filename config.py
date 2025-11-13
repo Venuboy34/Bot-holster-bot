@@ -19,7 +19,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "")
 
 # MongoDB Configuration
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-DATABASE_NAME = "bot_hoster"
+DATABASE_NAME = "@bothoster_z_bot"
 
 # Bot Settings
 MAX_BOTS_PER_USER = 5
