@@ -96,19 +96,39 @@ async def start_command(client: Client, message: Message):
 # Help command
 @app.on_message(filters.command("help") & filters.private)
 async def help_command(client: Client, message: Message):
-    await message.reply_text(WELCOME_MESSAGE, disable_web_page_preview=True)
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ Add Bot", callback_data="add_bot"),
+            InlineKeyboardButton("📋 My Bots", callback_data="my_bots")
+        ],
+        [
+            InlineKeyboardButton("📊 Stats", callback_data="stats"),
+            InlineKeyboardButton("🔙 Back", callback_data="start")
+        ],
+        [
+            InlineKeyboardButton("📢 Updates Channel", url="https://t.me/zerodevbro"),
+            InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/Zeroboy216")
+        ]
+    ])
+    
+    await message.reply_text(WELCOME_MESSAGE, reply_markup=keyboard, disable_web_page_preview=True)
 
 # Add bot command
 @app.on_message(filters.command("addbot") & filters.private)
 async def add_bot_command(client: Client, message: Message):
     user_id = message.from_user.id
     
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+    ])
+    
     msg = await message.reply_text(
         "**🤖 Add Your Bot**\n\n"
         "Please send me your bot token from @BotFather\n\n"
-        "Example: `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
-        "Use /cancel to cancel this operation.",
-        parse_mode="markdown"
+        "**Example:** `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
+        "Click Cancel to stop this operation.",
+        parse_mode="markdown",
+        reply_markup=keyboard
     )
     
     # Store state
@@ -178,42 +198,61 @@ async def handle_token_input(client: Client, message: Message, state):
     
     # Validate token format
     if not token or ":" not in token:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+        ])
         await message.reply_text(
-            "❌ Invalid token format!\n\n"
-            "Token should look like: `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
-            "Try again or use /cancel"
+            "❌ **Invalid token format!**\n\n"
+            "Token should look like:\n"
+            "`1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
+            "Try again or click Cancel.",
+            parse_mode="markdown",
+            reply_markup=keyboard
         )
         return
     
     # Verify token
-    processing = await message.reply_text("⏳ Verifying bot token...")
+    processing = await message.reply_text("⏳ **Verifying bot token...**\n\nPlease wait...")
     
     is_valid, bot_info = await runner.verify_token(token)
     
     if not is_valid:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Try Again", callback_data="add_bot")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+        ])
         await processing.edit_text(
-            "❌ Invalid bot token!\n\n"
+            "❌ **Invalid bot token!**\n\n"
             "Please check your token and try again.\n"
-            "Use /cancel to stop this operation."
+            "Get your token from @BotFather",
+            reply_markup=keyboard
         )
+        await db.clear_user_state(user_id)
         return
     
     # Save token temporarily
     await db.set_user_state(user_id, "waiting_script", None, {"token": token, "bot_info": bot_info})
     
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+    ])
+    
     await processing.edit_text(
-        f"✅ Bot verified: **@{bot_info['username']}**\n\n"
-        "Now send me your Python bot script.\n\n"
-        "**Example Script:**\n"
-        "```python\n"
-        "def handle_start(message):\n"
-        "    bot.send_message(message.chat.id, 'Hello!')\n\n"
-        "def on_message(message):\n"
-        "    if message.text == '/start':\n"
-        "        handle_start(message)\n"
-        "```\n\n"
-        "Use /cancel to cancel.",
-        parse_mode="markdown"
+        f"✅ **Bot Verified Successfully!**\n\n"
+        f"**Bot Name:** {bot_info['first_name']}\n"
+        f"**Username:** @{bot_info['username']}\n\n"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"Now send me your **Python bot script**.\n\n"
+        f"**Example Script:**\n"
+        f"```python\n"
+        f"from pyrogram import filters\n\n"
+        f"@bot.on_message(filters.command('start'))\n"
+        f"async def start(client, message):\n"
+        f"    await message.reply('Hello!')\n"
+        f"```\n\n"
+        f"Click Cancel to stop.",
+        parse_mode="markdown",
+        reply_markup=keyboard
     )
 
 async def handle_script_input(client: Client, message: Message, state):
@@ -222,10 +261,24 @@ async def handle_script_input(client: Client, message: Message, state):
     
     # Validate script
     if not script or len(script) < 10:
-        await message.reply_text("❌ Script too short! Please send a valid Python script.")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+        ])
+        await message.reply_text(
+            "❌ **Script too short!**\n\n"
+            "Please send a valid Python script.\n"
+            "Minimum 10 characters required.",
+            reply_markup=keyboard
+        )
         return
     
-    processing = await message.reply_text("⏳ Validating and starting your bot...")
+    processing = await message.reply_text(
+        "⏳ **Processing your bot...**\n\n"
+        "🔍 Validating script...\n"
+        "⚙️ Setting up bot...\n"
+        "🚀 Starting bot...\n\n"
+        "Please wait..."
+    )
     
     # Get token from state
     token = state.get("data", {}).get("token")
@@ -239,10 +292,15 @@ async def handle_script_input(client: Client, message: Message, state):
     # Validate script safety
     is_safe, error = await runner.validate_script(script)
     if not is_safe:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Try Again", callback_data="add_bot")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+        ])
         await processing.edit_text(
-            f"❌ Script validation failed!\n\n"
-            f"Reason: {error}\n\n"
-            "Please fix your script and try again."
+            f"❌ **Script Validation Failed!**\n\n"
+            f"**Reason:** {error}\n\n"
+            f"Please fix your script and try again.",
+            reply_markup=keyboard
         )
         return
     
@@ -253,21 +311,40 @@ async def handle_script_input(client: Client, message: Message, state):
     success = await runner.start_bot(bot_id, token, script)
     
     if success:
+        await db.update_bot_status(bot_id, "running")
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 My Bots", callback_data="my_bots")],
+            [InlineKeyboardButton("➕ Add Another Bot", callback_data="add_bot")],
+            [InlineKeyboardButton("🏠 Home", callback_data="start")]
+        ])
+        
         await processing.edit_text(
             f"✅ **Bot Started Successfully!**\n\n"
-            f"**Bot:** @{bot_info['username']}\n"
+            f"**Bot Name:** {bot_info['first_name']}\n"
+            f"**Username:** @{bot_info['username']}\n"
             f"**Bot ID:** `{bot_id}`\n"
             f"**Status:** 🟢 Running\n\n"
+            f"━━━━━━━━━━━━━━━━\n\n"
+            f"Your bot is now live and ready to use!\n\n"
             f"Use /mybots to manage your bots.\n\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"⚡ **Powered by Zero Dev Bro**\n"
             f"📢 **Updates:** @zerodevbro",
-            parse_mode="markdown"
+            parse_mode="markdown",
+            reply_markup=keyboard
         )
     else:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Try Again", callback_data="add_bot")],
+            [InlineKeyboardButton("🏠 Home", callback_data="start")]
+        ])
         await processing.edit_text(
-            "❌ Failed to start bot!\n\n"
-            "Please check your script and try again."
+            "❌ **Failed to start bot!**\n\n"
+            "There was an error starting your bot.\n"
+            "Please check your script and try again.\n\n"
+            "If the problem persists, contact @Zeroboy216",
+            reply_markup=keyboard
         )
         await db.delete_bot(bot_id)
     
@@ -278,12 +355,23 @@ async def handle_script_edit(client: Client, message: Message, state):
     script = message.text
     bot_id = state.get("data", {}).get("bot_id")
     
-    processing = await message.reply_text("⏳ Updating bot script...")
+    processing = await message.reply_text(
+        "⏳ **Updating bot script...**\n\n"
+        "Please wait..."
+    )
     
     # Validate script
     is_safe, error = await runner.validate_script(script)
     if not is_safe:
-        await processing.edit_text(f"❌ Script validation failed!\n\nReason: {error}")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to My Bots", callback_data="my_bots")]
+        ])
+        await processing.edit_text(
+            f"❌ **Script Validation Failed!**\n\n"
+            f"**Reason:** {error}\n\n"
+            f"Please fix your script and try again.",
+            reply_markup=keyboard
+        )
         return
     
     # Update script
@@ -294,13 +382,29 @@ async def handle_script_edit(client: Client, message: Message, state):
     await runner.stop_bot(bot_id)
     success = await runner.start_bot(bot_id, bot["token"], script)
     
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 My Bots", callback_data="my_bots")],
+        [InlineKeyboardButton("🏠 Home", callback_data="start")]
+    ])
+    
     if success:
+        await db.update_bot_status(bot_id, "running")
         await processing.edit_text(
-            "✅ Bot script updated and restarted successfully!\n\n"
-            "Use /mybots to see your bots."
+            "✅ **Bot Script Updated Successfully!**\n\n"
+            f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
+            f"**Status:** 🟢 Running\n\n"
+            "Your bot has been restarted with the new script.\n\n"
+            "Use /mybots to see all your bots.",
+            reply_markup=keyboard
         )
     else:
-        await processing.edit_text("❌ Failed to restart bot with new script!")
+        await processing.edit_text(
+            "❌ **Failed to restart bot with new script!**\n\n"
+            "The script has been saved but the bot couldn't start.\n"
+            "Please check your script.\n\n"
+            "Contact @Zeroboy216 if the problem persists.",
+            reply_markup=keyboard
+        )
     
     await db.clear_user_state(user_id)
 
@@ -310,27 +414,221 @@ async def callback_handler(client: Client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
     
-    if data == "add_bot":
-        await callback_query.message.reply_text(
-            "**🤖 Add Your Bot**\n\n"
-            "Please send me your bot token from @BotFather\n\n"
-            "Use /cancel to cancel.",
-            parse_mode="markdown"
-        )
+    if data == "start":
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("➕ Add Bot", callback_data="add_bot"),
+                InlineKeyboardButton("📋 My Bots", callback_data="my_bots")
+            ],
+            [
+                InlineKeyboardButton("📚 Help", callback_data="help"),
+                InlineKeyboardButton("📊 Stats", callback_data="stats")
+            ],
+            [
+                InlineKeyboardButton("📢 Updates Channel", url="https://t.me/zerodevbro"),
+                InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/Zeroboy216")
+            ]
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                WELCOME_MESSAGE,
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
+        except:
+            await callback_query.message.reply_text(
+                WELCOME_MESSAGE,
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
+        await callback_query.answer()
+    
+    elif data == "add_bot":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                "**🤖 Add Your Bot**\n\n"
+                "Please send me your bot token from @BotFather\n\n"
+                "**Example:** `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
+                "Click Cancel to stop this operation.",
+                parse_mode="markdown",
+                reply_markup=keyboard
+            )
+        except:
+            await callback_query.message.reply_text(
+                "**🤖 Add Your Bot**\n\n"
+                "Please send me your bot token from @BotFather\n\n"
+                "**Example:** `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
+                "Click Cancel to stop this operation.",
+                parse_mode="markdown",
+                reply_markup=keyboard
+            )
         await db.set_user_state(user_id, "waiting_token", None)
         await callback_query.answer()
+    
+    elif data == "cancel_operation":
+        await db.clear_user_state(user_id)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Home", callback_data="start")]
+        ])
+        try:
+            await callback_query.message.edit_text(
+                "✅ **Operation Cancelled**\n\n"
+                "Click Home to return to main menu.",
+                reply_markup=keyboard
+            )
+        except:
+            await callback_query.message.reply_text(
+                "✅ **Operation Cancelled**\n\n"
+                "Click Home to return to main menu.",
+                reply_markup=keyboard
+            )
+        await callback_query.answer("❌ Cancelled")
         
     elif data == "my_bots":
         await callback_query.answer()
-        await my_bots_command(client, callback_query.message)
+        bots = await db.get_user_bots(user_id)
+        
+        if not bots:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Add Bot", callback_data="add_bot")],
+                [InlineKeyboardButton("🔙 Back", callback_data="start")]
+            ])
+            
+            try:
+                await callback_query.message.edit_text(
+                    "❌ **You don't have any bots yet!**\n\n"
+                    "Use Add Bot button to add your first bot.",
+                    reply_markup=keyboard
+                )
+            except:
+                await callback_query.message.reply_text(
+                    "❌ **You don't have any bots yet!**\n\n"
+                    "Use Add Bot button to add your first bot.",
+                    reply_markup=keyboard
+                )
+            return
+        
+        text = "**📋 Your Hosted Bots:**\n\n"
+        keyboards = []
+        
+        for idx, bot in enumerate(bots, 1):
+            status = "🟢 Running" if bot.get("status") == "running" else "🔴 Stopped"
+            text += f"{idx}. **Bot:** @{bot.get('bot_username', 'unknown')}\n"
+            text += f"   **ID:** `{bot['_id']}`\n"
+            text += f"   **Status:** {status}\n"
+            text += f"   **Created:** {bot.get('created_at', 'N/A')}\n\n"
+            
+            keyboards.append([
+                InlineKeyboardButton(
+                    f"{'⏹️ Stop' if bot.get('status') == 'running' else '▶️ Start'} Bot {idx}",
+                    callback_data=f"toggle_{bot['_id']}"
+                ),
+                InlineKeyboardButton(f"✏️ Edit {idx}", callback_data=f"edit_{bot['_id']}")
+            ])
+            keyboards.append([
+                InlineKeyboardButton(f"🗑️ Delete Bot {idx}", callback_data=f"delete_confirm_{bot['_id']}")
+            ])
+        
+        keyboards.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="my_bots"),
+            InlineKeyboardButton("🔙 Back", callback_data="start")
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboards),
+                parse_mode="markdown"
+            )
+        except:
+            await callback_query.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboards),
+                parse_mode="markdown"
+            )
         
     elif data == "help":
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("➕ Add Bot", callback_data="add_bot"),
+                InlineKeyboardButton("📋 My Bots", callback_data="my_bots")
+            ],
+            [
+                InlineKeyboardButton("📊 Stats", callback_data="stats"),
+                InlineKeyboardButton("🔙 Back", callback_data="start")
+            ],
+            [
+                InlineKeyboardButton("📢 Updates Channel", url="https://t.me/zerodevbro"),
+                InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/Zeroboy216")
+            ]
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                WELCOME_MESSAGE,
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
+        except:
+            await callback_query.message.reply_text(
+                WELCOME_MESSAGE,
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
         await callback_query.answer()
-        await callback_query.message.reply_text(WELCOME_MESSAGE)
+    
+    elif data == "stats":
+        stats = await db.get_stats()
+        
+        stats_text = f"""
+📊 **Bot Hoster Statistics**
+
+**🤖 Bots:**
+━━━━━━━━━━━━━━━━
+Total Bots: `{stats['total_bots']}`
+🟢 Running: `{stats['running_bots']}`
+🔴 Stopped: `{stats['stopped_bots']}`
+
+**👥 Users:**
+━━━━━━━━━━━━━━━━
+Total Users: `{stats['total_users']}`
+
+━━━━━━━━━━━━━━━━
+⚡ **Powered by Zero Dev Bro**
+📢 **Updates:** @zerodevbro
+"""
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh", callback_data="stats")],
+            [InlineKeyboardButton("🔙 Back", callback_data="start")]
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                stats_text,
+                reply_markup=keyboard,
+                parse_mode="markdown"
+            )
+        except:
+            await callback_query.message.reply_text(
+                stats_text,
+                reply_markup=keyboard,
+                parse_mode="markdown"
+            )
+        await callback_query.answer()
         
     elif data.startswith("toggle_"):
         bot_id = data.split("_")[1]
         bot = await db.get_bot(bot_id)
+        
+        if not bot:
+            await callback_query.answer("❌ Bot not found!", show_alert=True)
+            return
         
         if bot["user_id"] != user_id:
             await callback_query.answer("❌ Not your bot!", show_alert=True)
@@ -347,29 +645,131 @@ async def callback_handler(client: Client, callback_query):
                 await callback_query.answer("▶️ Bot started!")
             else:
                 await callback_query.answer("❌ Failed to start bot!", show_alert=True)
+                return
         
-        await my_bots_command(client, callback_query.message)
+        # Refresh the bots list
+        bots = await db.get_user_bots(user_id)
+        text = "**📋 Your Hosted Bots:**\n\n"
+        keyboards = []
+        
+        for idx, bot in enumerate(bots, 1):
+            status = "🟢 Running" if bot.get("status") == "running" else "🔴 Stopped"
+            text += f"{idx}. **Bot:** @{bot.get('bot_username', 'unknown')}\n"
+            text += f"   **ID:** `{bot['_id']}`\n"
+            text += f"   **Status:** {status}\n"
+            text += f"   **Created:** {bot.get('created_at', 'N/A')}\n\n"
+            
+            keyboards.append([
+                InlineKeyboardButton(
+                    f"{'⏹️ Stop' if bot.get('status') == 'running' else '▶️ Start'} Bot {idx}",
+                    callback_data=f"toggle_{bot['_id']}"
+                ),
+                InlineKeyboardButton(f"✏️ Edit {idx}", callback_data=f"edit_{bot['_id']}")
+            ])
+            keyboards.append([
+                InlineKeyboardButton(f"🗑️ Delete Bot {idx}", callback_data=f"delete_confirm_{bot['_id']}")
+            ])
+        
+        keyboards.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="my_bots"),
+            InlineKeyboardButton("🔙 Back", callback_data="start")
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboards),
+                parse_mode="markdown"
+            )
+        except:
+            pass
         
     elif data.startswith("edit_"):
         bot_id = data.split("_")[1]
         bot = await db.get_bot(bot_id)
         
+        if not bot:
+            await callback_query.answer("❌ Bot not found!", show_alert=True)
+            return
+        
         if bot["user_id"] != user_id:
             await callback_query.answer("❌ Not your bot!", show_alert=True)
             return
         
-        await callback_query.message.reply_text(
-            "**✏️ Edit Bot Script**\n\n"
-            "Send me the new Python script for your bot.\n\n"
-            "Use /cancel to cancel.",
-            parse_mode="markdown"
-        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="my_bots")]
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                "**✏️ Edit Bot Script**\n\n"
+                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n\n"
+                "Send me the new Python script for your bot.\n\n"
+                "Click Cancel to go back.",
+                parse_mode="markdown",
+                reply_markup=keyboard
+            )
+        except:
+            await callback_query.message.reply_text(
+                "**✏️ Edit Bot Script**\n\n"
+                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n\n"
+                "Send me the new Python script for your bot.\n\n"
+                "Click Cancel to go back.",
+                parse_mode="markdown",
+                reply_markup=keyboard
+            )
+        
         await db.set_user_state(user_id, "editing_script", None, {"bot_id": bot_id})
         await callback_query.answer()
         
+    elif data.startswith("delete_confirm_"):
+        bot_id = data.split("_", 2)[2]
+        bot = await db.get_bot(bot_id)
+        
+        if not bot:
+            await callback_query.answer("❌ Bot not found!", show_alert=True)
+            return
+        
+        if bot["user_id"] != user_id:
+            await callback_query.answer("❌ Not your bot!", show_alert=True)
+            return
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Yes, Delete", callback_data=f"delete_{bot_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data="my_bots")
+            ]
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                f"**⚠️ Confirm Delete**\n\n"
+                f"Are you sure you want to delete this bot?\n\n"
+                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
+                f"**ID:** `{bot_id}`\n\n"
+                f"**This action cannot be undone!**",
+                reply_markup=keyboard,
+                parse_mode="markdown"
+            )
+        except:
+            await callback_query.message.reply_text(
+                f"**⚠️ Confirm Delete**\n\n"
+                f"Are you sure you want to delete this bot?\n\n"
+                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
+                f"**ID:** `{bot_id}`\n\n"
+                f"**This action cannot be undone!**",
+                reply_markup=keyboard,
+                parse_mode="markdown"
+            )
+        await callback_query.answer()
+    
     elif data.startswith("delete_"):
         bot_id = data.split("_")[1]
         bot = await db.get_bot(bot_id)
+        
+        if not bot:
+            await callback_query.answer("❌ Bot not found!", show_alert=True)
+            return
         
         if bot["user_id"] != user_id:
             await callback_query.answer("❌ Not your bot!", show_alert=True)
@@ -377,8 +777,71 @@ async def callback_handler(client: Client, callback_query):
         
         await runner.stop_bot(bot_id)
         await db.delete_bot(bot_id)
+        
         await callback_query.answer("🗑️ Bot deleted!")
-        await my_bots_command(client, callback_query.message)
+        
+        # Show updated bots list
+        bots = await db.get_user_bots(user_id)
+        
+        if not bots:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Add Bot", callback_data="add_bot")],
+                [InlineKeyboardButton("🔙 Back", callback_data="start")]
+            ])
+            
+            try:
+                await callback_query.message.edit_text(
+                    "✅ **Bot Deleted Successfully!**\n\n"
+                    "❌ You don't have any bots now.\n\n"
+                    "Use Add Bot button to add a new bot.",
+                    reply_markup=keyboard
+                )
+            except:
+                await callback_query.message.reply_text(
+                    "✅ **Bot Deleted Successfully!**\n\n"
+                    "❌ You don't have any bots now.\n\n"
+                    "Use Add Bot button to add a new bot.",
+                    reply_markup=keyboard
+                )
+            return
+        
+        text = "✅ **Bot Deleted Successfully!**\n\n**📋 Your Remaining Bots:**\n\n"
+        keyboards = []
+        
+        for idx, bot in enumerate(bots, 1):
+            status = "🟢 Running" if bot.get("status") == "running" else "🔴 Stopped"
+            text += f"{idx}. **Bot:** @{bot.get('bot_username', 'unknown')}\n"
+            text += f"   **ID:** `{bot['_id']}`\n"
+            text += f"   **Status:** {status}\n\n"
+            
+            keyboards.append([
+                InlineKeyboardButton(
+                    f"{'⏹️ Stop' if bot.get('status') == 'running' else '▶️ Start'} Bot {idx}",
+                    callback_data=f"toggle_{bot['_id']}"
+                ),
+                InlineKeyboardButton(f"✏️ Edit {idx}", callback_data=f"edit_{bot['_id']}")
+            ])
+            keyboards.append([
+                InlineKeyboardButton(f"🗑️ Delete Bot {idx}", callback_data=f"delete_confirm_{bot['_id']}")
+            ])
+        
+        keyboards.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="my_bots"),
+            InlineKeyboardButton("🔙 Back", callback_data="start")
+        ])
+        
+        try:
+            await callback_query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboards),
+                parse_mode="markdown"
+            )
+        except:
+            await callback_query.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboards),
+                parse_mode="markdown"
+            )
 
 # Admin commands
 @app.on_message(filters.command(["broadcast", "total", "restart", "stats"]) & filters.user(OWNER_ID))
