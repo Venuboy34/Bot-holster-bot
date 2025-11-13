@@ -9,7 +9,8 @@ import os
 import sys
 import tempfile
 import logging
-from pyrogram import Client
+from pyrogram import Client, filters
+from pyrogram.types import Message
 from config import BLOCKED_IMPORTS, BOT_FOOTER, AUTO_RESTART, API_ID, API_HASH
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ class BotRunner:
         self.db = db
         self.running_bots = {}  # bot_id -> process
         self.bot_clients = {}   # bot_id -> Client
+        self.bot_tasks = {}     # bot_id -> asyncio.Task
         
     async def verify_token(self, token: str):
         """Verify if bot token is valid"""
@@ -52,9 +54,9 @@ class BotRunner:
             if blocked in script:
                 return False, f"Blocked import/function detected: {blocked}"
         
-        # Check if script has basic structure
-        if "def " not in script:
-            return False, "Script must contain at least one function definition"
+        # Check if script has message handlers
+        if "@bot.on_message" not in script and "filters.command" not in script:
+            return False, "Script must contain at least one message handler (@bot.on_message)"
         
         # Try to compile the script
         try:
@@ -81,122 +83,193 @@ class BotRunner:
                 in_memory=True
             )
             
-            # Create a wrapper script with error handling
-            wrapped_script = self._wrap_script(script, bot_id)
-            
-            # Start the bot
+            # Start the bot client
             await bot_client.start()
+            logger.info(f"✅ Bot client {bot_id} connected")
             
-            # Execute the user script in a safe namespace
+            # Import required modules for the script
+            from pyrogram import filters
+            from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            
+            # Create a safe namespace for script execution
             namespace = {
                 'bot': bot_client,
+                'app': bot_client,  # Support both @bot and @app decorators
                 'Client': Client,
+                'filters': filters,
+                'InlineKeyboardMarkup': InlineKeyboardMarkup,
+                'InlineKeyboardButton': InlineKeyboardButton,
+                'Message': Message,
                 'asyncio': asyncio,
                 'logger': logger,
-                'BOT_FOOTER': BOT_FOOTER
+                'BOT_FOOTER': BOT_FOOTER,
+                '__builtins__': __builtins__,
             }
             
-            exec(wrapped_script, namespace)
+            # Execute the user script
+            try:
+                exec(script, namespace)
+                logger.info(f"✅ Script executed for bot {bot_id}")
+            except Exception as e:
+                logger.error(f"❌ Script execution error for bot {bot_id}: {e}")
+                await bot_client.stop()
+                return False
             
             # Store the client
             self.bot_clients[bot_id] = bot_client
             
-            # Start message handler
-            asyncio.create_task(self._handle_bot_messages(bot_id, bot_client, namespace))
+            # Create a task to keep bot running
+            task = asyncio.create_task(self._keep_bot_alive(bot_id, bot_client, token, script))
+            self.bot_tasks[bot_id] = task
             
             logger.info(f"✅ Bot {bot_id} started successfully")
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to start bot {bot_id}: {e}")
-            await self.db.increment_error_count(bot_id)
+            try:
+                await self.db.increment_error_count(bot_id)
+            except:
+                pass
             return False
     
-    def _wrap_script(self, script: str, bot_id: str):
-        """Wrap user script with error handling and footer"""
-        wrapper = f"""
-import asyncio
-from pyrogram import filters
-
-# User script
-{script}
-
-# Add footer to all messages
-def add_footer(text):
-    return text + "\\n" + BOT_FOOTER
-
-# Wrap message handler
-original_on_message = on_message if 'on_message' in dir() else None
-
-if original_on_message:
-    async def wrapped_on_message(client, message):
+    async def _keep_bot_alive(self, bot_id: str, bot_client: Client, token: str, script: str):
+        """Keep bot alive and handle auto-restart"""
         try:
-            await original_on_message(client, message)
-        except Exception as e:
-            logger.error(f"Error in bot {bot_id}: {{e}}")
-            await message.reply_text("❌ An error occurred processing your message.")
-    
-    # Register handler
-    from pyrogram import filters
-    @bot.on_message(filters.private)
-    async def message_handler(client, message):
-        await wrapped_on_message(client, message)
-"""
-        return wrapper
-    
-    async def _handle_bot_messages(self, bot_id: str, bot_client: Client, namespace: dict):
-        """Handle messages for a hosted bot"""
-        try:
-            # Keep the bot running
-            await asyncio.Event().wait()
+            # Keep the bot running indefinitely
+            while bot_id in self.bot_clients:
+                await asyncio.sleep(1)
+                
         except asyncio.CancelledError:
-            logger.info(f"Bot {bot_id} message handler cancelled")
-        except Exception as e:
-            logger.error(f"Error in bot {bot_id} message handler: {e}")
+            logger.info(f"Bot {bot_id} task cancelled")
             
-            if AUTO_RESTART:
-                logger.info(f"Auto-restarting bot {bot_id}")
-                bot = await self.db.get_bot(bot_id)
-                if bot:
-                    await asyncio.sleep(5)  # Wait before restart
-                    await self.start_bot(bot_id, bot["token"], bot["script"])
+        except Exception as e:
+            logger.error(f"Error in bot {bot_id}: {e}")
+            
+            # Auto-restart if enabled
+            if AUTO_RESTART and bot_id in self.bot_clients:
+                logger.info(f"🔄 Auto-restarting bot {bot_id}")
+                await asyncio.sleep(5)
+                await self.start_bot(bot_id, token, script)
     
     async def stop_bot(self, bot_id: str):
         """Stop a hosted bot"""
         try:
+            # Cancel the task
+            if bot_id in self.bot_tasks:
+                task = self.bot_tasks[bot_id]
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                del self.bot_tasks[bot_id]
+            
+            # Stop the client
             if bot_id in self.bot_clients:
                 client = self.bot_clients[bot_id]
-                await client.stop()
+                try:
+                    await client.stop()
+                except:
+                    pass
                 del self.bot_clients[bot_id]
-                logger.info(f"⏹️ Bot {bot_id} stopped")
-                return True
+                
+            logger.info(f"⏹️ Bot {bot_id} stopped")
+            return True
+            
         except Exception as e:
             logger.error(f"Error stopping bot {bot_id}: {e}")
-        return False
+            return False
     
     async def restart_bot(self, bot_id: str):
         """Restart a hosted bot"""
-        bot = await self.db.get_bot(bot_id)
-        if not bot:
+        try:
+            bot = await self.db.get_bot(bot_id)
+            if not bot:
+                logger.error(f"Bot {bot_id} not found in database")
+                return False
+            
+            logger.info(f"🔄 Restarting bot {bot_id}")
+            await self.stop_bot(bot_id)
+            await asyncio.sleep(2)
+            
+            success = await self.start_bot(bot_id, bot["token"], bot["script"])
+            
+            if success:
+                logger.info(f"✅ Bot {bot_id} restarted successfully")
+            else:
+                logger.error(f"❌ Failed to restart bot {bot_id}")
+                
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error restarting bot {bot_id}: {e}")
             return False
-        
-        await self.stop_bot(bot_id)
-        await asyncio.sleep(2)
-        return await self.start_bot(bot_id, bot["token"], bot["script"])
     
     async def stop_all_bots(self):
         """Stop all running bots"""
+        logger.info("Stopping all bots...")
         bot_ids = list(self.bot_clients.keys())
+        
         for bot_id in bot_ids:
-            await self.stop_bot(bot_id)
-        logger.info("All bots stopped")
+            try:
+                await self.stop_bot(bot_id)
+            except Exception as e:
+                logger.error(f"Error stopping bot {bot_id}: {e}")
+        
+        logger.info("✅ All bots stopped")
     
     async def get_bot_stats(self, bot_id: str):
         """Get statistics for a specific bot"""
         if bot_id not in self.bot_clients:
-            return {"status": "stopped"}
+            return {
+                "status": "stopped",
+                "uptime": 0
+            }
         
         return {
             "status": "running",
-            "uptime": "N/A"  # Can be extended with more metrics
+            "uptime": "N/A",  # Can be extended with actual uptime tracking
+            "client_status": "connected"
         }
+    
+    async def restart_all_bots(self):
+        """Restart all bots from database"""
+        try:
+            # Get all bots with running status
+            all_bots = await self.db.get_all_bots()
+            
+            started_count = 0
+            failed_count = 0
+            
+            for bot in all_bots:
+                if bot.get("status") == "running":
+                    bot_id = str(bot["_id"])
+                    try:
+                        success = await self.start_bot(bot_id, bot["token"], bot["script"])
+                        if success:
+                            started_count += 1
+                        else:
+                            failed_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to restart bot {bot_id}: {e}")
+                        failed_count += 1
+            
+            logger.info(f"✅ Restarted {started_count} bots, {failed_count} failed")
+            return started_count, failed_count
+            
+        except Exception as e:
+            logger.error(f"Error restarting all bots: {e}")
+            return 0, 0
+    
+    def is_bot_running(self, bot_id: str):
+        """Check if a bot is currently running"""
+        return bot_id in self.bot_clients
+    
+    def get_running_bots_count(self):
+        """Get count of currently running bots"""
+        return len(self.bot_clients)
+    
+    def get_running_bot_ids(self):
+        """Get list of running bot IDs"""
+        return list(self.bot_clients.keys())
