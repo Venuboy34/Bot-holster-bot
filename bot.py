@@ -177,7 +177,7 @@ async def my_bots_command(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup(keyboards)
     )
 
-# Handle messages based on user state
+# Handle messages based on user state (text and files)
 @app.on_message(filters.private & ~filters.command(["start", "help", "mybots", "addbot", "cancel", "broadcast", "total", "restart", "stats"]))
 async def handle_message(client: Client, message: Message):
     user_id = message.from_user.id
@@ -190,9 +190,17 @@ async def handle_message(client: Client, message: Message):
     if state["action"] == "waiting_token":
         await handle_token_input(client, message, state)
     elif state["action"] == "waiting_script":
-        await handle_script_input(client, message, state)
+        # Check if user sent a file
+        if message.document:
+            await handle_script_file(client, message, state)
+        else:
+            await handle_script_input(client, message, state)
     elif state["action"] == "editing_script":
-        await handle_script_edit(client, message, state)
+        # Check if user sent a file
+        if message.document:
+            await handle_script_file_edit(client, message, state)
+        else:
+            await handle_script_edit(client, message, state)
 
 async def handle_token_input(client: Client, message: Message, state):
     user_id = message.from_user.id
@@ -244,6 +252,9 @@ async def handle_token_input(client: Client, message: Message, state):
         f"**Username:** @{bot_info['username']}\n\n"
         f"━━━━━━━━━━━━━━━━\n\n"
         f"Now send me your **Python bot script**.\n\n"
+        f"**You can send:**\n"
+        f"📝 Text - Copy and paste your script\n"
+        f"📁 File - Upload a .py file\n\n"
         f"**Example Script:**\n"
         f"```python\n"
         f"from pyrogram import filters\n\n"
@@ -406,6 +417,237 @@ async def handle_script_edit(client: Client, message: Message, state):
         )
     
     await db.clear_user_state(user_id)
+
+async def handle_script_file(client: Client, message: Message, state):
+    """Handle Python script file upload"""
+    user_id = message.from_user.id
+    
+    # Check if file is a Python file
+    if not message.document.file_name.endswith('.py'):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+        ])
+        await message.reply_text(
+            "❌ **Invalid file type!**\n\n"
+            "Please send a Python file (.py)\n\n"
+            "Accepted format: `bot.py`, `script.py`, etc.",
+            reply_markup=keyboard
+        )
+        return
+    
+    # Check file size (max 5MB)
+    if message.document.file_size > 5 * 1024 * 1024:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+        ])
+        await message.reply_text(
+            "❌ **File too large!**\n\n"
+            "Maximum file size: 5MB\n"
+            "Your file size: " + f"{message.document.file_size / (1024 * 1024):.2f}MB",
+            reply_markup=keyboard
+        )
+        return
+    
+    processing = await message.reply_text(
+        "⏳ **Processing your bot...**\n\n"
+        "📥 Downloading file...\n"
+        "🔍 Validating script...\n"
+        "⚙️ Setting up bot...\n"
+        "🚀 Starting bot...\n\n"
+        "Please wait..."
+    )
+    
+    try:
+        # Download the file
+        file_path = await message.download()
+        
+        # Read the script content
+        with open(file_path, 'r', encoding='utf-8') as f:
+            script = f.read()
+        
+        # Delete the downloaded file
+        import os
+        os.remove(file_path)
+        
+        # Get token from state
+        token = state.get("data", {}).get("token")
+        bot_info = state.get("data", {}).get("bot_info")
+        
+        if not token:
+            await processing.edit_text("❌ Session expired. Please start over with /addbot")
+            await db.clear_user_state(user_id)
+            return
+        
+        # Validate script safety
+        is_safe, error = await runner.validate_script(script)
+        if not is_safe:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Try Again", callback_data="add_bot")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_operation")]
+            ])
+            await processing.edit_text(
+                f"❌ **Script Validation Failed!**\n\n"
+                f"**Reason:** {error}\n\n"
+                f"Please fix your script and try again.",
+                reply_markup=keyboard
+            )
+            return
+        
+        # Save to database
+        bot_id = await db.add_bot(user_id, token, script, bot_info)
+        
+        # Start the bot
+        success = await runner.start_bot(bot_id, token, script)
+        
+        if success:
+            await db.update_bot_status(bot_id, "running")
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 My Bots", callback_data="my_bots")],
+                [InlineKeyboardButton("➕ Add Another Bot", callback_data="add_bot")],
+                [InlineKeyboardButton("🏠 Home", callback_data="start")]
+            ])
+            
+            await processing.edit_text(
+                f"✅ **Bot Started Successfully!**\n\n"
+                f"**Bot Name:** {bot_info['first_name']}\n"
+                f"**Username:** @{bot_info['username']}\n"
+                f"**Bot ID:** `{bot_id}`\n"
+                f"**Status:** 🟢 Running\n"
+                f"**File:** {message.document.file_name}\n\n"
+                f"━━━━━━━━━━━━━━━━\n\n"
+                f"Your bot is now live and ready to use!\n\n"
+                f"Use /mybots to manage your bots.\n\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"⚡ **Powered by Zero Dev Bro**\n"
+                f"📢 **Updates:** @zerodevbro",
+                reply_markup=keyboard
+            )
+        else:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Try Again", callback_data="add_bot")],
+                [InlineKeyboardButton("🏠 Home", callback_data="start")]
+            ])
+            await processing.edit_text(
+                "❌ **Failed to start bot!**\n\n"
+                "There was an error starting your bot.\n"
+                "Please check your script and try again.\n\n"
+                "If the problem persists, contact @Zeroboy216",
+                reply_markup=keyboard
+            )
+            await db.delete_bot(bot_id)
+        
+        await db.clear_user_state(user_id)
+        
+    except Exception as e:
+        logger.error(f"Error handling script file: {e}")
+        await processing.edit_text(
+            f"❌ **Error processing file!**\n\n"
+            f"Failed to read or process your Python file.\n\n"
+            f"Please make sure:\n"
+            f"• File is a valid Python script\n"
+            f"• File is encoded in UTF-8\n"
+            f"• File is not corrupted\n\n"
+            f"Error: {str(e)[:100]}"
+        )
+        await db.clear_user_state(user_id)
+
+async def handle_script_file_edit(client: Client, message: Message, state):
+    """Handle Python script file upload for editing"""
+    user_id = message.from_user.id
+    bot_id = state.get("data", {}).get("bot_id")
+    
+    # Check if file is a Python file
+    if not message.document.file_name.endswith('.py'):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to My Bots", callback_data="my_bots")]
+        ])
+        await message.reply_text(
+            "❌ **Invalid file type!**\n\n"
+            "Please send a Python file (.py)",
+            reply_markup=keyboard
+        )
+        return
+    
+    processing = await message.reply_text(
+        "⏳ **Updating bot script...**\n\n"
+        "📥 Downloading file...\n"
+        "Please wait..."
+    )
+    
+    try:
+        # Download the file
+        file_path = await message.download()
+        
+        # Read the script content
+        with open(file_path, 'r', encoding='utf-8') as f:
+            script = f.read()
+        
+        # Delete the downloaded file
+        import os
+        os.remove(file_path)
+        
+        # Validate script
+        is_safe, error = await runner.validate_script(script)
+        if not is_safe:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back to My Bots", callback_data="my_bots")]
+            ])
+            await processing.edit_text(
+                f"❌ **Script Validation Failed!**\n\n"
+                f"**Reason:** {error}\n\n"
+                f"Please fix your script and try again.",
+                reply_markup=keyboard
+            )
+            return
+        
+        # Update script
+        await db.update_bot_script(bot_id, script)
+        
+        # Restart bot
+        bot = await db.get_bot(bot_id)
+        await runner.stop_bot(bot_id)
+        success = await runner.start_bot(bot_id, bot["token"], script)
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 My Bots", callback_data="my_bots")],
+            [InlineKeyboardButton("🏠 Home", callback_data="start")]
+        ])
+        
+        if success:
+            await db.update_bot_status(bot_id, "running")
+            await processing.edit_text(
+                "✅ **Bot Script Updated Successfully!**\n\n"
+                f"**Bot:** @{bot.get('bot_username', 'unknown')}\n"
+                f"**Status:** 🟢 Running\n"
+                f"**File:** {message.document.file_name}\n\n"
+                "Your bot has been restarted with the new script.\n\n"
+                "Use /mybots to see all your bots.",
+                reply_markup=keyboard
+            )
+        else:
+            await processing.edit_text(
+                "❌ **Failed to restart bot with new script!**\n\n"
+                "The script has been saved but the bot couldn't start.\n"
+                "Please check your script.\n\n"
+                "Contact @Zeroboy216 if the problem persists.",
+                reply_markup=keyboard
+            )
+        
+        await db.clear_user_state(user_id)
+        
+    except Exception as e:
+        logger.error(f"Error handling script file edit: {e}")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to My Bots", callback_data="my_bots")]
+        ])
+        await processing.edit_text(
+            f"❌ **Error processing file!**\n\n"
+            f"Failed to read your Python file.\n\n"
+            f"Error: {str(e)[:100]}",
+            reply_markup=keyboard
+        )
+        await db.clear_user_state(user_id)
 
 # Callback query handler
 @app.on_callback_query()
